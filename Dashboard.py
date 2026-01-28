@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import os, math
+import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -17,7 +17,7 @@ st.title("💸 AI Personal Finance Advisor")
 # --------------------------------------------------
 # Constants
 # --------------------------------------------------
-CATEGORIES = ["Food","Travel","Shopping","Rent","Bills","Entertainment","Income","Other"]
+CATEGORIES = ["Food","Travel","Shopping","Rent","Bills","Entertainment","Investment","Income","Other"]
 FIXED_CATEGORIES = ["Rent"]
 
 RISK_RETURN = {
@@ -27,7 +27,7 @@ RISK_RETURN = {
 }
 
 # --------------------------------------------------
-# Finance Math (Deterministic)
+# Finance Math
 # --------------------------------------------------
 def sip_future_value(sip, years, rate):
     r = rate / 12
@@ -45,8 +45,17 @@ def calculate_emi(principal, annual_rate, years):
     n = years * 12
     return int(principal * r * pow(1+r, n) / (pow(1+r, n) - 1))
 
+def classify_cashflow(category):
+    if category == "Income":
+        return "Income"
+    if category in ["Food","Travel","Shopping","Rent","Bills","Entertainment","Other"]:
+        return "Expense"
+    if category in ["Investment","SIP"]:
+        return "Investment"
+    return "Expense"
+
 # --------------------------------------------------
-# AI Functions (EXISTING)
+# AI FUNCTIONS
 # --------------------------------------------------
 @st.cache_data(show_spinner=False)
 def ai_categorize_with_reason(desc):
@@ -81,11 +90,11 @@ User financial state:
 {state}
 
 Tasks:
-1. Identify the single biggest financial issue.
-2. Explain why it is happening.
+1. Identify the single biggest financial issue OR strength.
+2. Explain why.
 3. Give ONE clear, actionable recommendation.
 
-Be professional, realistic, and concise.
+Praise good behavior where applicable.
 """
     res = client.chat.completions.create(
         model="gpt-3.5-turbo",
@@ -94,22 +103,20 @@ Be professional, realistic, and concise.
     )
     return res.choices[0].message.content.strip()
 
-def ai_goal_strategy(goal, finances):
+def ai_insight_agent(state):
     prompt = f"""
-You are a financial planning AI.
+You are a senior financial insight AI.
 
-Goal details:
-{goal}
+User snapshot:
+{state}
 
-User finances:
-{finances}
+Tasks:
+1. Highlight financial strengths and weaknesses.
+2. If investment_rate >= 25%, explicitly praise discipline.
+3. Identify the biggest risk (if any).
+4. Give high-impact recommendations.
 
-Decide:
-- Is the goal realistic?
-- Should loan or investment dominate?
-- What adjustment would help?
-
-Give clear advice.
+Executive summary style.
 """
     res = client.chat.completions.create(
         model="gpt-3.5-turbo",
@@ -120,19 +127,12 @@ Give clear advice.
 
 def ai_category_insight(category, spent, budget):
     prompt = f"""
-You are a professional personal finance advisor.
-
 Category: {category}
-Actual Monthly Spend: ₹{spent}
-Budgeted Amount: ₹{budget}
+Spent: ₹{spent}
+Budget: ₹{budget}
 
-Rules:
-- Do NOT give generic advice.
-- Use NUMBERS.
-- Mention the exact overspend or underspend.
-- Suggest a concrete behavioral change specific to this category.
-
-Respond in 3 bullet points.
+Explain overspend/underspend with numbers.
+Give one specific corrective action.
 """
     res = client.chat.completions.create(
         model="gpt-3.5-turbo",
@@ -141,33 +141,31 @@ Respond in 3 bullet points.
     )
     return res.choices[0].message.content.strip()
 
-# --------------------------------------------------
-# 🔹 NEW AI FUNCTIONS (ADDITIVE ONLY)
-# --------------------------------------------------
-def ai_goal_feasibility(goal, sip, emi, savings_capacity):
+def ai_financial_hygiene_score(state):
     prompt = f"""
-You are a financial planning AI.
+Evaluate financial hygiene (0–100).
 
+User:
+{state}
+
+Explain score and give 2 fixes.
+"""
+    res = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role":"user","content":prompt}],
+        temperature=0.3
+    )
+    return res.choices[0].message.content.strip()
+
+def ai_goal_strategy(goal, finances):
+    prompt = f"""
 Goal:
 {goal}
 
-Calculated values:
-- Required SIP: ₹{sip}
-- Required EMI: ₹{emi}
-- User savings capacity: ₹{savings_capacity}
+User finances:
+{finances}
 
-Rules:
-- If SIP + EMI > savings capacity, feasibility must be below 50.
-
-Tasks:
-1. Give a feasibility score (0–100).
-2. Explain the score.
-3. Suggest ONE improvement.
-
-Format:
-Feasibility Score:
-Explanation:
-Improvement:
+Advise realistically.
 """
     res = client.chat.completions.create(
         model="gpt-3.5-turbo",
@@ -176,20 +174,14 @@ Improvement:
     )
     return res.choices[0].message.content.strip()
 
-def ai_financial_hygiene_score(state):
+def ai_goal_feasibility(goal, sip, emi, savings):
     prompt = f"""
-You are a financial health assessment AI.
+Goal: {goal}
+SIP: ₹{sip}
+EMI: ₹{emi}
+Savings: ₹{savings}
 
-User snapshot:
-{state}
-
-Tasks:
-1. Assign a Financial Hygiene Score (0–100).
-2. Explain what it means.
-3. List top 2 weaknesses.
-4. Give 2 improvement actions.
-
-Be realistic and specific.
+Give feasibility score (0–100) and fix.
 """
     res = client.chat.completions.create(
         model="gpt-3.5-turbo",
@@ -199,25 +191,23 @@ Be realistic and specific.
     return res.choices[0].message.content.strip()
 
 # --------------------------------------------------
-# Inputs
+# INPUTS
 # --------------------------------------------------
 st.subheader("🧾 Financial Profile")
 income = st.number_input("Monthly Income (₹)", 85000, step=5000)
-emi_existing = st.number_input("Existing Monthly EMI (₹)", 15000, step=1000)
+emi_existing = st.number_input("Existing EMI (₹)", 15000, step=1000)
 risk = st.selectbox("Risk Profile", list(RISK_RETURN.keys()))
 exp_return = RISK_RETURN[risk]
 emergency = st.number_input("Emergency Fund (₹)", 75000, step=5000)
 
 st.subheader("💰 Category Budgets")
-budgets = {}
-for c in CATEGORIES:
-    if c not in FIXED_CATEGORIES and c != "Income":
-        budgets[c] = st.number_input(f"{c} Budget", 5000, step=500)
+budgets = {c: st.number_input(f"{c} Budget", 5000, step=500)
+           for c in CATEGORIES if c not in FIXED_CATEGORIES and c != "Income"}
 
 file = st.file_uploader("Upload Bank Statement CSV", type=["csv"])
 
 # --------------------------------------------------
-# State
+# STATE
 # --------------------------------------------------
 if "analyzed" not in st.session_state:
     st.session_state.analyzed = False
@@ -225,7 +215,7 @@ if "goals" not in st.session_state:
     st.session_state.goals = []
 
 # --------------------------------------------------
-# Analysis
+# ANALYSIS
 # --------------------------------------------------
 if file and st.button("🚀 Analyze Expenses"):
     df = pd.read_csv(file)
@@ -233,169 +223,106 @@ if file and st.button("🚀 Analyze Expenses"):
     status = st.empty()
 
     cats, reasons = [], []
-    total = len(df)
-
-    for i, d in enumerate(df["Description"], start=1):
-        status.text(f"Analyzing transaction {i}/{total}")
+    for i, d in enumerate(df["Description"], 1):
+        status.text(f"Analyzing {i}/{len(df)} transactions")
         c, r = ai_categorize_with_reason(d)
         cats.append(c)
         reasons.append(r)
-        progress.progress(i/total)
+        progress.progress(i / len(df))
 
     df["Category"] = cats
     df["Reason"] = reasons
 
-    exp_df = df[df["Amount"] < 0]
-    cat_spend = exp_df.groupby("Category")["Amount"].sum().abs()
-
     st.session_state.df = df
-    st.session_state.exp_df = exp_df
-    st.session_state.cat_spend = cat_spend
     st.session_state.analyzed = True
 
     status.empty()
     progress.empty()
 
 # --------------------------------------------------
-# Results
+# RESULTS
 # --------------------------------------------------
 if st.session_state.analyzed:
     df = st.session_state.df
-    exp_df = st.session_state.exp_df
-    cat_spend = st.session_state.cat_spend
 
-    total_spend = abs(exp_df["Amount"].sum())
-    savings = income - total_spend - emi_existing
+    df["CashflowType"] = df["Category"].apply(classify_cashflow)
 
-    st.subheader("🧾 Transaction-Level Explainability")
-    st.dataframe(df[["Date","Description","Amount","Category","Reason"]], width="stretch")
+    expense_df = df[(df["Amount"] < 0) & (df["CashflowType"] == "Expense")]
+    investment_df = df[(df["Amount"] < 0) & (df["CashflowType"] == "Investment")]
 
-    sip_proj = sip_future_value(10000, 10, exp_return)
+    total_expenses = abs(expense_df["Amount"].sum())
+    total_investments = abs(investment_df["Amount"].sum())
+
+    savings = income - total_expenses - emi_existing - total_investments
+    investment_rate = (total_investments / income) * 100 if income else 0
+
+    st.subheader("🧾 Transaction Explainability")
+    st.dataframe(df)
 
     st.subheader("📌 Wealth Snapshot")
-    a,b,c,d = st.columns(4)
+    a,b,c,d,e = st.columns(5)
     a.metric("Income", f"₹{income:,}")
-    b.metric("Expenses", f"₹{int(total_spend):,}")
-    c.metric("Current Wealth", f"₹{emergency:,}")
-    d.metric("Projected Wealth", f"₹{int(emergency+sip_proj):,}")
+    b.metric("Expenses", f"₹{int(total_expenses):,}")
+    c.metric("Investments", f"₹{int(total_investments):,}")
+    d.metric("Savings", f"₹{int(savings):,}")
+    e.metric("Investment Rate", f"{investment_rate:.1f}%")
 
-    # 🔹 Financial Hygiene Score (NEW)
-    st.subheader("🧠 Financial Hygiene Score (AI)")
-    hygiene_state = {
-        "income": income,
-        "expenses": int(total_spend),
-        "existing_emi": emi_existing,
-        "savings_capacity": savings,
-        "emergency_fund": emergency,
-        "over_budget_categories": [
-            c for c, s in cat_spend.items()
-            if budgets.get(c, 0) > 0 and s > budgets.get(c, 0)
-        ]
-    }
+    st.subheader("🧠 Insight Agent")
+    if st.button("Generate Insight"):
+        st.success(ai_insight_agent({
+            "income": income,
+            "expenses": total_expenses,
+            "investments": total_investments,
+            "investment_rate": investment_rate,
+            "goals": st.session_state.goals
+        }))
 
-    if st.button("Evaluate Financial Hygiene"):
-        st.success(ai_financial_hygiene_score(hygiene_state))
+    st.subheader("🧠 Financial Hygiene Score")
+    if st.button("Evaluate Hygiene"):
+        st.success(ai_financial_hygiene_score({
+            "income": income,
+            "expenses": total_expenses,
+            "emi": emi_existing,
+            "savings": savings
+        }))
 
-    # Charts
-    st.subheader("📊 Spending Breakdown")
-    x,y = st.columns(2)
-    with x:
-        fig,ax = plt.subplots()
-        ax.pie(cat_spend, labels=cat_spend.index, autopct="%1.1f%%")
-        st.pyplot(fig)
-    with y:
-        daily = exp_df.groupby("Date")["Amount"].sum().abs()
-        fig,ax = plt.subplots()
-        daily.plot(kind="bar", ax=ax)
-        st.pyplot(fig)
+    st.subheader("🤖 Autonomous Agent")
+    if st.button("Run Autonomous Agent"):
+        st.success(autonomous_finance_agent({
+            "income": income,
+            "expenses": total_expenses,
+            "investments": total_investments,
+            "investment_rate": investment_rate,
+            "goals": st.session_state.goals
+        }))
 
-    # Category-wise analysis (EXISTING)
-    st.subheader("📂 Category-Wise Spend Analysis")
-    for category, spent in cat_spend.items():
-        if category == "Income":
-            continue
-
-        budget = budgets.get(category, 0)
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Category", category)
-        c2.metric("Spent", f"₹{int(spent):,}")
-        c3.metric("Budget", f"₹{int(budget):,}")
-
-        if budget > 0:
-            if spent > budget:
-                st.error(f"Over budget by ₹{int(spent - budget):,}")
-            else:
-                st.success(f"Under budget by ₹{int(budget - spent):,}")
-        else:
-            st.warning("No budget set")
-
-        with st.expander("🤖 AI Explanation & Recommendation"):
-            st.markdown(ai_category_insight(category, int(spent), int(budget)))
-
-        st.divider()
-
-    # --------------------------------------------------
-    # 🤖 Autonomous Financial Insight Agent (FIXED)
-    # --------------------------------------------------
-    st.subheader("🤖 Autonomous Financial Insight Agent")
-
-    agent_state = {
-        "income": income,
-        "expenses": int(total_spend),
-        "existing_emi": emi_existing,
-        "savings_capacity": savings,
-        "category_spend": cat_spend.to_dict(),
-        "goals": st.session_state.goals
-    }
-
-    if st.button("Run Agent", key="run_agent"):
-        with st.spinner("Analyzing your finances..."):
-            agent_output = autonomous_finance_agent(agent_state)
-        st.success(agent_output)
-
-
-    # Goals (EXISTING + FEASIBILITY ADDED)
-    st.subheader("🎯 Goal-Based Planning")
-    st.markdown("### 🎯 Add New Goal")
-
+    st.subheader("🎯 Goal Planning")
     g_name = st.text_input("Goal Name")
     g_amt = st.number_input("Goal Amount", step=50000)
-    g_years = st.slider("Time Horizon (Years)", 1, 15, 3)
-
+    g_years = st.slider("Years", 1, 15, 3)
     g_loan = st.checkbox("Use Loan")
-    if g_loan:
-        g_loan_pct = st.slider("Loan %", 0, 80, 50)
-        g_loan_rate = st.slider("Loan Interest %", 6.0, 15.0, 10.0)
-    else:
-        g_loan_pct = 0
-        g_loan_rate = 0.0
+
+    g_lp = st.slider("Loan %", 0, 80, 50) if g_loan else 0
+    g_lr = st.slider("Loan Interest %", 6.0, 15.0, 10.0) if g_loan else 0
 
     if st.button("Add Goal"):
         st.session_state.goals.append({
             "name": g_name,
             "amount": g_amt,
             "years": g_years,
-            "loan_pct": g_loan_pct,
-            "loan_rate": g_loan_rate
+            "loan_pct": g_lp,
+            "loan_rate": g_lr
         })
 
     for g in st.session_state.goals:
-        loan_amt = g["amount"] * g["loan_pct"] / 100
-        invest_amt = g["amount"] - loan_amt
-        sip_req = sip_required(invest_amt, g["years"], exp_return)
-        emi_goal = calculate_emi(loan_amt, g["loan_rate"], g["years"]) if loan_amt > 0 else 0
+        loan = g["amount"] * g["loan_pct"] / 100
+        sip = sip_required(g["amount"] - loan, g["years"], exp_return)
+        emi = calculate_emi(loan, g["loan_rate"], g["years"]) if loan else 0
 
-        st.markdown(f"""
-### 🎯 {g['name']}
-- Required SIP: ₹{sip_req:,}
-- Goal EMI: ₹{emi_goal:,}
-""")
-
-        st.info(ai_goal_strategy(g, {"savings_capacity": savings}))
-
-        with st.expander("📊 Goal Feasibility (AI)"):
-            st.markdown(
-                ai_goal_feasibility(g, sip_req, emi_goal, savings)
-            )
+        st.markdown(f"### 🎯 {g['name']}")
+        st.write(f"SIP: ₹{sip:,} | EMI: ₹{emi:,}")
+        st.info(ai_goal_strategy(g, {"savings": savings}))
+        with st.expander("Goal Feasibility"):
+            st.markdown(ai_goal_feasibility(g, sip, emi, savings))
 
 st.caption("⚠️ Educational demo only. Not financial advice.")
