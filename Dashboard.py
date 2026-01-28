@@ -13,10 +13,6 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 st.set_page_config(page_title="AI Personal Finance Advisor", layout="wide")
 st.title("💸 AI Personal Finance Advisor")
-# st.sidebar.page_link(
-#     "pages/credit_card_analyzer.py",
-#     label="💳 Analyze Credit Card Bill"
-# )
 
 # --------------------------------------------------
 # Constants
@@ -50,7 +46,7 @@ def calculate_emi(principal, annual_rate, years):
     return int(principal * r * pow(1+r, n) / (pow(1+r, n) - 1))
 
 # --------------------------------------------------
-# AI Functions
+# AI Functions (EXISTING)
 # --------------------------------------------------
 @st.cache_data(show_spinner=False)
 def ai_categorize_with_reason(desc):
@@ -122,9 +118,6 @@ Give clear advice.
     )
     return res.choices[0].message.content.strip()
 
-# --------------------------------------------------
-# 🔹 ADDED AI FUNCTION (CATEGORY ANALYSIS ONLY)
-# --------------------------------------------------
 def ai_category_insight(category, spent, budget):
     prompt = f"""
 You are a professional personal finance advisor.
@@ -139,17 +132,69 @@ Rules:
 - Mention the exact overspend or underspend.
 - Suggest a concrete behavioral change specific to this category.
 
-Tasks:
-1. State whether the user is over or under budget (with ₹ amount).
-2. Explain the most likely reason.
-3. Give ONE specific, measurable action (e.g., reduce X by Y%).
-
-Respond in 3 short bullet points.
+Respond in 3 bullet points.
 """
     res = client.chat.completions.create(
         model="gpt-3.5-turbo",
         messages=[{"role":"user","content":prompt}],
         temperature=0.2
+    )
+    return res.choices[0].message.content.strip()
+
+# --------------------------------------------------
+# 🔹 NEW AI FUNCTIONS (ADDITIVE ONLY)
+# --------------------------------------------------
+def ai_goal_feasibility(goal, sip, emi, savings_capacity):
+    prompt = f"""
+You are a financial planning AI.
+
+Goal:
+{goal}
+
+Calculated values:
+- Required SIP: ₹{sip}
+- Required EMI: ₹{emi}
+- User savings capacity: ₹{savings_capacity}
+
+Rules:
+- If SIP + EMI > savings capacity, feasibility must be below 50.
+
+Tasks:
+1. Give a feasibility score (0–100).
+2. Explain the score.
+3. Suggest ONE improvement.
+
+Format:
+Feasibility Score:
+Explanation:
+Improvement:
+"""
+    res = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role":"user","content":prompt}],
+        temperature=0.3
+    )
+    return res.choices[0].message.content.strip()
+
+def ai_financial_hygiene_score(state):
+    prompt = f"""
+You are a financial health assessment AI.
+
+User snapshot:
+{state}
+
+Tasks:
+1. Assign a Financial Hygiene Score (0–100).
+2. Explain what it means.
+3. List top 2 weaknesses.
+4. Give 2 improvement actions.
+
+Be realistic and specific.
+"""
+    res = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role":"user","content":prompt}],
+        temperature=0.3
     )
     return res.choices[0].message.content.strip()
 
@@ -222,18 +267,34 @@ if st.session_state.analyzed:
     total_spend = abs(exp_df["Amount"].sum())
     savings = income - total_spend - emi_existing
 
-    # Transaction explainability
     st.subheader("🧾 Transaction-Level Explainability")
     st.dataframe(df[["Date","Description","Amount","Category","Reason"]], width="stretch")
 
-    # Wealth
     sip_proj = sip_future_value(10000, 10, exp_return)
+
     st.subheader("📌 Wealth Snapshot")
     a,b,c,d = st.columns(4)
     a.metric("Income", f"₹{income:,}")
     b.metric("Expenses", f"₹{int(total_spend):,}")
     c.metric("Current Wealth", f"₹{emergency:,}")
     d.metric("Projected Wealth", f"₹{int(emergency+sip_proj):,}")
+
+    # 🔹 Financial Hygiene Score (NEW)
+    st.subheader("🧠 Financial Hygiene Score (AI)")
+    hygiene_state = {
+        "income": income,
+        "expenses": int(total_spend),
+        "existing_emi": emi_existing,
+        "savings_capacity": savings,
+        "emergency_fund": emergency,
+        "over_budget_categories": [
+            c for c, s in cat_spend.items()
+            if budgets.get(c, 0) > 0 and s > budgets.get(c, 0)
+        ]
+    }
+
+    if st.button("Evaluate Financial Hygiene"):
+        st.success(ai_financial_hygiene_score(hygiene_state))
 
     # Charts
     st.subheader("📊 Spending Breakdown")
@@ -248,18 +309,13 @@ if st.session_state.analyzed:
         daily.plot(kind="bar", ax=ax)
         st.pyplot(fig)
 
-    # --------------------------------------------------
-    # 🔹 ADDED CATEGORY-WISE ANALYSIS SECTION
-    # --------------------------------------------------
+    # Category-wise analysis (EXISTING)
     st.subheader("📂 Category-Wise Spend Analysis")
-
     for category, spent in cat_spend.items():
-
         if category == "Income":
             continue
 
         budget = budgets.get(category, 0)
-
         c1, c2, c3 = st.columns(3)
         c1.metric("Category", category)
         c2.metric("Spent", f"₹{int(spent):,}")
@@ -271,41 +327,42 @@ if st.session_state.analyzed:
             else:
                 st.success(f"Under budget by ₹{int(budget - spent):,}")
         else:
-            st.warning("No budget set for this category")
+            st.warning("No budget set")
 
         with st.expander("🤖 AI Explanation & Recommendation"):
-            st.markdown(
-                ai_category_insight(
-                    category,
-                    int(spent),
-                    int(budget)
-                )
-            )
+            st.markdown(ai_category_insight(category, int(spent), int(budget)))
 
         st.divider()
 
-    # Autonomous Agent
+    # --------------------------------------------------
+    # 🤖 Autonomous Financial Insight Agent (FIXED)
+    # --------------------------------------------------
     st.subheader("🤖 Autonomous Financial Insight Agent")
-    state = {
+
+    agent_state = {
         "income": income,
         "expenses": int(total_spend),
-        "savings_capacity": int(savings),
+        "existing_emi": emi_existing,
+        "savings_capacity": savings,
         "category_spend": cat_spend.to_dict(),
         "goals": st.session_state.goals
     }
-    if st.button("Run Agent"):
-        agent_output = autonomous_finance_agent(state)
+
+    if st.button("Run Agent", key="run_agent"):
+        with st.spinner("Analyzing your finances..."):
+            agent_output = autonomous_finance_agent(agent_state)
         st.success(agent_output)
 
-    # Goals
+
+    # Goals (EXISTING + FEASIBILITY ADDED)
     st.subheader("🎯 Goal-Based Planning")
     st.markdown("### 🎯 Add New Goal")
+
     g_name = st.text_input("Goal Name")
     g_amt = st.number_input("Goal Amount", step=50000)
     g_years = st.slider("Time Horizon (Years)", 1, 15, 3)
 
     g_loan = st.checkbox("Use Loan")
-
     if g_loan:
         g_loan_pct = st.slider("Loan %", 0, 80, 50)
         g_loan_rate = st.slider("Loan Interest %", 6.0, 15.0, 10.0)
@@ -322,7 +379,6 @@ if st.session_state.analyzed:
             "loan_rate": g_loan_rate
         })
 
-
     for g in st.session_state.goals:
         loan_amt = g["amount"] * g["loan_pct"] / 100
         invest_amt = g["amount"] - loan_amt
@@ -335,8 +391,11 @@ if st.session_state.analyzed:
 - Goal EMI: ₹{emi_goal:,}
 """)
 
-        ai_advice = ai_goal_strategy(g, {"savings_capacity": savings})
-        st.info(ai_advice)
+        st.info(ai_goal_strategy(g, {"savings_capacity": savings}))
 
-# --------------------------------------------------
+        with st.expander("📊 Goal Feasibility (AI)"):
+            st.markdown(
+                ai_goal_feasibility(g, sip_req, emi_goal, savings)
+            )
+
 st.caption("⚠️ Educational demo only. Not financial advice.")
