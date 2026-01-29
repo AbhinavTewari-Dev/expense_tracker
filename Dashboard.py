@@ -17,7 +17,10 @@ st.title("💸 AI Personal Finance Advisor")
 # --------------------------------------------------
 # Constants
 # --------------------------------------------------
-CATEGORIES = ["Food","Travel","Shopping","Rent","Bills","Entertainment","Investment","Income","Other"]
+CATEGORIES = [
+    "Food","Travel","Shopping","Rent","Bills",
+    "Entertainment","Investment","Income","Other"
+]
 FIXED_CATEGORIES = ["Rent"]
 
 RISK_RETURN = {
@@ -41,6 +44,8 @@ def sip_required(target, years, rate):
     return int(target / factor)
 
 def calculate_emi(principal, annual_rate, years):
+    if principal <= 0:
+        return 0
     r = (annual_rate / 100) / 12
     n = years * 12
     return int(principal * r * pow(1+r, n) / (pow(1+r, n) - 1))
@@ -48,9 +53,7 @@ def calculate_emi(principal, annual_rate, years):
 def classify_cashflow(category):
     if category == "Income":
         return "Income"
-    if category in ["Food","Travel","Shopping","Rent","Bills","Entertainment","Other"]:
-        return "Expense"
-    if category in ["Investment","SIP"]:
+    if category in ["Investment"]:
         return "Investment"
     return "Expense"
 
@@ -113,7 +116,7 @@ User snapshot:
 Tasks:
 1. Highlight financial strengths and weaknesses.
 2. If investment_rate >= 25%, explicitly praise discipline.
-3. Identify the biggest risk (if any).
+3. Identify the biggest risk.
 4. Give high-impact recommendations.
 
 Executive summary style.
@@ -201,8 +204,10 @@ exp_return = RISK_RETURN[risk]
 emergency = st.number_input("Emergency Fund (₹)", 75000, step=5000)
 
 st.subheader("💰 Category Budgets")
-budgets = {c: st.number_input(f"{c} Budget", 5000, step=500)
-           for c in CATEGORIES if c not in FIXED_CATEGORIES and c != "Income"}
+budgets = {
+    c: st.number_input(f"{c} Budget", 5000, step=500)
+    for c in CATEGORIES if c not in FIXED_CATEGORIES and c != "Income"
+}
 
 file = st.file_uploader("Upload Bank Statement CSV", type=["csv"])
 
@@ -232,6 +237,7 @@ if file and st.button("🚀 Analyze Expenses"):
 
     df["Category"] = cats
     df["Reason"] = reasons
+    df["CashflowType"] = df["Category"].apply(classify_cashflow)
 
     st.session_state.df = df
     st.session_state.analyzed = True
@@ -245,20 +251,20 @@ if file and st.button("🚀 Analyze Expenses"):
 if st.session_state.analyzed:
     df = st.session_state.df
 
-    df["CashflowType"] = df["Category"].apply(classify_cashflow)
-
     expense_df = df[(df["Amount"] < 0) & (df["CashflowType"] == "Expense")]
     investment_df = df[(df["Amount"] < 0) & (df["CashflowType"] == "Investment")]
 
     total_expenses = abs(expense_df["Amount"].sum())
     total_investments = abs(investment_df["Amount"].sum())
-
-    savings = income - total_expenses - emi_existing - total_investments
+    savings = income - total_expenses - total_investments - emi_existing
     investment_rate = (total_investments / income) * 100 if income else 0
 
     st.subheader("🧾 Transaction Explainability")
-    st.dataframe(df)
+    st.dataframe(df, width="stretch")
 
+    # -------------------------------
+    # Wealth Snapshot
+    # -------------------------------
     st.subheader("📌 Wealth Snapshot")
     a,b,c,d,e = st.columns(5)
     a.metric("Income", f"₹{income:,}")
@@ -267,6 +273,56 @@ if st.session_state.analyzed:
     d.metric("Savings", f"₹{int(savings):,}")
     e.metric("Investment Rate", f"{investment_rate:.1f}%")
 
+    # -------------------------------
+    # Charts (RESTORED)
+    # -------------------------------
+    st.subheader("📊 Spending Breakdown")
+
+    cat_spend = expense_df.groupby("Category")["Amount"].sum().abs()
+    daily_spend = expense_df.groupby("Date")["Amount"].sum().abs()
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        fig, ax = plt.subplots()
+        ax.pie(cat_spend, labels=cat_spend.index, autopct="%1.1f%%")
+        ax.set_title("Category-wise Expense Split")
+        st.pyplot(fig)
+
+    with col2:
+        fig, ax = plt.subplots()
+        daily_spend.plot(kind="bar", ax=ax)
+        ax.set_title("Daily Expense Trend")
+        st.pyplot(fig)
+
+    # -------------------------------
+    # Category-wise Analysis (RESTORED)
+    # -------------------------------
+    st.subheader("📂 Category-wise Spend Analysis")
+    for category, spent in cat_spend.items():
+        budget = budgets.get(category, 0)
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Category", category)
+        c2.metric("Spent", f"₹{int(spent):,}")
+        c3.metric("Budget", f"₹{int(budget):,}")
+
+        if budget > 0:
+            if spent > budget:
+                st.error(f"Over budget by ₹{int(spent - budget):,}")
+            else:
+                st.success(f"Under budget by ₹{int(budget - spent):,}")
+        else:
+            st.warning("No budget set")
+
+        with st.expander("🤖 AI Explanation"):
+            st.markdown(ai_category_insight(category, int(spent), int(budget)))
+
+        st.divider()
+
+    # -------------------------------
+    # AI AGENTS
+    # -------------------------------
     st.subheader("🧠 Insight Agent")
     if st.button("Generate Insight"):
         st.success(ai_insight_agent({
@@ -296,6 +352,9 @@ if st.session_state.analyzed:
             "goals": st.session_state.goals
         }))
 
+    # -------------------------------
+    # Goals
+    # -------------------------------
     st.subheader("🎯 Goal Planning")
     g_name = st.text_input("Goal Name")
     g_amt = st.number_input("Goal Amount", step=50000)
@@ -317,7 +376,7 @@ if st.session_state.analyzed:
     for g in st.session_state.goals:
         loan = g["amount"] * g["loan_pct"] / 100
         sip = sip_required(g["amount"] - loan, g["years"], exp_return)
-        emi = calculate_emi(loan, g["loan_rate"], g["years"]) if loan else 0
+        emi = calculate_emi(loan, g["loan_rate"], g["years"])
 
         st.markdown(f"### 🎯 {g['name']}")
         st.write(f"SIP: ₹{sip:,} | EMI: ₹{emi:,}")
